@@ -1,0 +1,165 @@
+# OtaClock2 CI/CD (Go / Ebitengine)
+#
+# Stages:
+#   test    — go vet + go test + Linux build verification
+#   release — cross-compiled binaries (Linux/Windows/macOS) + docker publish
+#
+# Because the Go port cross-compiles Windows and macOS with CGO_ENABLED=0, every
+# release artifact is produced from a single Linux runner. Only the native Linux
+# build needs CGO and the GL/X11 dev headers.
+#
+# Container registry: registry.gitlab.com/austin-millan/otaclock
+# Docker Hub: aamillan/otaclock (set CI/CD variables DOCKERHUB_USER, DOCKERHUB_SECRET)
+# Runners: tag `linux` (Docker executor); docker:publish needs the host socket.
+
+stages:
+  - test
+  - release
+
+variables:
+  GO_VERSION: "1.26"
+  RELEASE_VERSION: "${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}"
+  DOCKER_REGISTRY_IMAGE: "registry.gitlab.com/austin-millan/otaclock"
+  DOCKERHUB_IMAGE: "aamillan/otaclock"
+  DOCKER_HOST: unix:///var/run/docker.sock
+  DOCKER_TLS_CERTDIR: ""
+  # Ebitengine cross-compiles to Windows with CGO_ENABLED=0, but its macOS GLFW
+  # backend still needs CGO — so the macOS artifact requires a real Mac runner.
+  SKIP_MACOS: "true"
+
+.rules-all:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+.rules-release:
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.rules-docker-publish:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH
+
+.go:
+  tags: [linux]
+  image: "golang:${GO_VERSION}-bookworm"
+  variables:
+    GOPATH: "${CI_PROJECT_DIR}/.gopath"
+  cache:
+    key: go-mod
+    paths:
+      - .gopath/pkg/mod
+  before_script:
+    - bash scripts/ci/install-linux-build-deps.sh
+    - chmod +x scripts/ci/*.sh
+    - go version
+
+.docker-host:
+  tags: [linux]
+  image: docker:24-cli
+  before_script:
+    - test -S /var/run/docker.sock || (echo "Mount /var/run/docker.sock in runner config.toml" >&2 && exit 1)
+
+# ---------------------------------------------------------------------------
+# Test
+# ---------------------------------------------------------------------------
+
+test:
+  extends:
+    - .go
+    - .rules-all
+  stage: test
+  script:
+    - go vet ./...
+    - go test ./...
+
+build:linux:
+  extends:
+    - .go
+    - .rules-all
+  stage: test
+  variables:
+    CGO_ENABLED: "1"
+  script:
+    - go build -trimpath -o dist/otaclock2 .
+
+# ---------------------------------------------------------------------------
+# Release
+# ---------------------------------------------------------------------------
+
+# # Linux (native CGO) + Windows (pure-Go cross-compile) built from one Linux runner.
+# release:binaries:
+#   extends:
+#     - .go
+#     - .rules-release
+#   stage: release
+#   needs:
+#     - job: test
+#     - job: build:linux
+#   script:
+#     - apt-get update && apt-get install -y --no-install-recommends zip
+#     - CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/bin/otaclock2-linux-amd64 .
+#     - CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-H windowsgui" -o dist/bin/otaclock2-windows-amd64.exe .
+#     - bash scripts/ci/package-release.sh linux-amd64 "${RELEASE_VERSION}" dist/bin/otaclock2-linux-amd64
+#     - bash scripts/ci/package-release.sh windows-amd64 "${RELEASE_VERSION}" dist/bin/otaclock2-windows-amd64.exe
+#   artifacts:
+#     name: "otaclock2-${RELEASE_VERSION}"
+#     paths:
+#       - dist/otaclock2-${RELEASE_VERSION}-*.tar.gz
+#       - dist/otaclock2-${RELEASE_VERSION}-*.zip
+#     expire_in: 30 days
+
+# macOS needs a real Mac because Ebitengine's GLFW backend uses CGO on darwin.
+# release:macos:
+#   stage: release
+#   tags: [macos]
+#   needs: []
+#   before_script:
+#     - chmod +x scripts/ci/*.sh
+#     - go version
+#   script:
+#     - CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -trimpath -o dist/bin/otaclock2-darwin-arm64 .
+#     - CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -trimpath -o dist/bin/otaclock2-darwin-amd64 .
+#     - bash scripts/ci/bundle-mac.sh dist/bin/otaclock2-darwin-arm64 dist/OtaClock2.app
+#     - bash scripts/ci/package-release.sh macos-arm64 "${RELEASE_VERSION}" dist/bin/otaclock2-darwin-arm64
+#     - bash scripts/ci/package-release.sh macos-amd64 "${RELEASE_VERSION}" dist/bin/otaclock2-darwin-amd64
+#   artifacts:
+#     name: "otaclock2-${RELEASE_VERSION}-macos"
+#     paths:
+#       - dist/otaclock2-${RELEASE_VERSION}-macos-*.tar.gz
+#       - dist/OtaClock2.app
+#     expire_in: 30 days
+#   rules:
+#     - if: $SKIP_MACOS == "true"
+#       when: never
+#     - if: $CI_COMMIT_TAG
+#     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+#   allow_failure: true
+
+docker:publish:
+  extends:
+    - .docker-host
+    - .rules-docker-publish
+  stage: release
+  needs:
+    - job: test
+    - job: build:linux
+  script:
+    - |
+      IMAGE="${CI_REGISTRY_IMAGE:-${DOCKER_REGISTRY_IMAGE}}"
+      TAG="${CI_COMMIT_SHORT_SHA}"
+      docker build --build-arg GO_VERSION="${GO_VERSION}" --build-arg VERSION="${RELEASE_VERSION}" -t "${IMAGE}:${TAG}" .
+      sh scripts/ci/docker-export-and-push.sh "${IMAGE}:${TAG}"
+  artifacts:
+    name: "otaclock2-docker-${RELEASE_VERSION}"
+    paths:
+      - dist/docker-push-tags.txt
+      - dist/dockerhub-push-tags.txt
+      - dist/docker-image-info.txt
+      - dist/otaclock2-docker-*.tar
+    expire_in: 30 days

@@ -1,0 +1,147 @@
+version: '3'
+
+vars:
+  BIN_DIR: dist
+  APP_NAME: OtaClock2
+  BINARY_NAME: otaclock2
+  PKG: gitlab.com/austin-millan/otaclock
+  DOCKER_IMAGE: otaclock2
+  DOCKER_TAG: local
+  DOCKER_REGISTRY_IMAGE: registry.gitlab.com/austin-millan/otaclock
+  DOCKER_REGISTRY_TAG: linux
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list
+
+  tidy:
+    desc: Resolve and prune Go module dependencies
+    cmds:
+      - go mod tidy
+
+  vet:
+    desc: Run go vet across all packages
+    cmds:
+      - go vet ./...
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  test-verbose:
+    desc: Run tests with verbose output
+    cmds:
+      - go test -v ./...
+
+  build:
+    desc: Build for the current platform
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -trimpath -o {{.BIN_DIR}}/{{.BINARY_NAME}} .
+      - echo "Binary → {{.BIN_DIR}}/{{.BINARY_NAME}}"
+
+  run:
+    desc: Build and run — set ANTHROPIC_API_KEY or OPENAI_API_KEY first
+    cmds:
+      - go run .
+
+  build-linux:
+    desc: Build a standalone Linux amd64 binary (needs GL/X11 dev libs; CGO on)
+    env:
+      CGO_ENABLED: 1
+      GOOS: linux
+      GOARCH: amd64
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -trimpath -o {{.BIN_DIR}}/{{.BINARY_NAME}}-linux-amd64 .
+      - echo "Binary → {{.BIN_DIR}}/{{.BINARY_NAME}}-linux-amd64"
+
+  build-windows:
+    desc: Cross-compile a Windows amd64 binary (pure Go, no C toolchain)
+    env:
+      CGO_ENABLED: 0
+      GOOS: windows
+      GOARCH: amd64
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -trimpath -ldflags "-H windowsgui" -o {{.BIN_DIR}}/{{.BINARY_NAME}}-windows-amd64.exe .
+      - echo "Binary → {{.BIN_DIR}}/{{.BINARY_NAME}}-windows-amd64.exe"
+
+  build-macos:
+    desc: Build a native macOS binary (must run on a Mac; Ebitengine needs CGO on darwin)
+    platforms: [darwin]
+    env:
+      CGO_ENABLED: 1
+      GOOS: darwin
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -trimpath -o {{.BIN_DIR}}/{{.BINARY_NAME}}-darwin-{{ARCH}} .
+      - echo "Binary → {{.BIN_DIR}}/{{.BINARY_NAME}}-darwin-{{ARCH}}"
+
+  build-all:
+    desc: Build the local binary plus the Windows cross-compile (macOS needs a Mac)
+    cmds:
+      - task: build
+      - task: build-windows
+
+  bundle-mac:
+    desc: Package the native binary as a macOS .app bundle
+    platforms: [darwin]
+    cmds:
+      - go build -trimpath -o {{.BIN_DIR}}/{{.BINARY_NAME}} .
+      - bash scripts/ci/bundle-mac.sh "{{.BIN_DIR}}/{{.BINARY_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.app"
+      - echo "App bundle → {{.BIN_DIR}}/{{.APP_NAME}}.app"
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf {{.BIN_DIR}}
+      - go clean
+
+  docker-build:
+    desc: Build the OtaClock2 Docker image (Linux GUI)
+    platforms: [linux]
+    cmds:
+      - docker build -t {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}} .
+      - task: docker-smoke
+
+  docker-smoke:
+    desc: Verify the Docker image ships a runnable binary
+    platforms: [linux]
+    cmds:
+      - |
+        docker run --rm --entrypoint sh {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}} -c '
+          set -e
+          test -x /app/otaclock2
+          ldd /app/otaclock2 | grep -q "not found" && { echo "Missing libraries"; ldd /app/otaclock2 | grep "not found"; exit 1; } || true
+          echo "Docker image OK"
+        '
+
+  docker-run:
+    desc: Build the image and run with host X11 (Linux GUI)
+    platforms: [linux]
+    deps: [docker-build]
+    cmds:
+      - bash scripts/ci/docker-run-gui.sh "{{.DOCKER_IMAGE}}:{{.DOCKER_TAG}}"
+
+  docker-run-registry:
+    desc: Pull and run from the GitLab Container Registry with host X11
+    platforms: [linux]
+    cmds:
+      - docker pull {{.DOCKER_REGISTRY_IMAGE}}:{{.DOCKER_REGISTRY_TAG}}
+      - bash scripts/ci/docker-run-gui.sh "{{.DOCKER_REGISTRY_IMAGE}}:{{.DOCKER_REGISTRY_TAG}}"
+
+  install-linux-deps:
+    desc: Install the GL/X11 development libraries needed to build on Linux
+    platforms: [linux]
+    cmds:
+      - sudo apt-get install -y libgl1-mesa-dev libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev libxxf86vm-dev libasound2-dev pkg-config
+      - echo "System libraries installed. Run 'task build'."
+
+  fmt:
+    desc: Format Go sources
+    cmds:
+      - gofmt -w .

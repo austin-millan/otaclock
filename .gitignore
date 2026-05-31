@@ -1,0 +1,13 @@
+# Build output
+/dist/
+/otaclock2
+/otaclock2.exe
+
+# Editor
+.vscode/
+.idea/
+
+# Go
+*.test
+*.out
+.gopath/

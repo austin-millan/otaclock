@@ -1,0 +1,10 @@
+.git/
+.gitignore
+.gitlab-ci.yml
+.vscode/
+.idea/
+dist/
+*.tar.gz
+*.zip
+Taskfile.yaml
+README.md
