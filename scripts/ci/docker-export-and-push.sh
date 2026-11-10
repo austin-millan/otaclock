@@ -7,7 +7,7 @@ REGISTRY_IMAGE="${CI_REGISTRY_IMAGE:-${DOCKER_REGISTRY_IMAGE:-registry.gitlab.co
 DOCKERHUB_IMAGE="${DOCKERHUB_IMAGE:-aamillan/otaclock}"
 
 if [ "${DOCKER_PUSH:-true}" != "true" ]; then
-  echo "DOCKER_PUSH is not true — skipping registry push." >&2
+  echo "DOCKER_PUSH is not true - skipping registry push." >&2
   exit 1
 fi
 
@@ -54,6 +54,10 @@ push_gitlab_tags() {
   if [ "${CI_COMMIT_BRANCH:-}" = "${CI_DEFAULT_BRANCH}" ]; then
     gitlab_push "latest"
   fi
+  # Monday scheduled publish (SCHEDULE_KIND=docker): keep short SHA + latest, add weekly.
+  if [ "${SCHEDULE_KIND:-}" = "docker" ] && [ "${CI_COMMIT_BRANCH:-}" = "${CI_DEFAULT_BRANCH}" ]; then
+    gitlab_push "weekly"
+  fi
 }
 
 # Docker Hub: release tags, plus latest + master on the default branch.
@@ -65,6 +69,9 @@ push_dockerhub_tags() {
   if [ "${CI_COMMIT_BRANCH:-}" = "${CI_DEFAULT_BRANCH}" ]; then
     dockerhub_push "latest"
     dockerhub_push "master"
+  fi
+  if [ "${SCHEDULE_KIND:-}" = "docker" ] && [ "${CI_COMMIT_BRANCH:-}" = "${CI_DEFAULT_BRANCH}" ]; then
+    dockerhub_push "weekly"
   fi
 }
 
@@ -80,7 +87,7 @@ if [ -n "${DOCKERHUB_USER:-}" ] && [ -n "${DOCKERHUB_SECRET:-}" ]; then
   echo "${DOCKERHUB_SECRET}" | docker login -u "${DOCKERHUB_USER}" --password-stdin
   push_dockerhub_tags
 else
-  echo "DOCKERHUB_USER or DOCKERHUB_SECRET not set — skipping Docker Hub push." >&2
+  echo "DOCKERHUB_USER or DOCKERHUB_SECRET not set - skipping Docker Hub push." >&2
 fi
 
 docker image inspect "${LOCAL_TAG}" > dist/docker-image-info.txt

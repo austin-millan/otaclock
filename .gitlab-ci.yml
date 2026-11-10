@@ -1,8 +1,8 @@
 # OtaClock2 CI/CD (Go / Ebitengine)
 #
 # Stages:
-#   test    — go vet + go test + Linux build verification
-#   release — cross-compiled binaries (Linux/Windows/macOS) + docker publish
+#   test    - go vet + go test + Linux build verification
+#   release - cross-compiled binaries (Linux/Windows/macOS) + docker publish
 #
 # Because the Go port cross-compiles Windows and macOS with CGO_ENABLED=0, every
 # release artifact is produced from a single Linux runner. Only the native Linux
@@ -11,6 +11,12 @@
 # Container registry: registry.gitlab.com/austin-millan/otaclock
 # Docker Hub: aamillan/otaclock (set CI/CD variables DOCKERHUB_USER, DOCKERHUB_SECRET)
 # Runners: tag `linux` (Docker executor); docker:publish needs the host socket.
+#
+# Scheduled pipelines (create in GitLab UI → Build → Pipeline schedules):
+#   Name: weekly-docker-publish
+#     Interval: every Monday (cron e.g. 0 6 * * 1)
+#     Target branch: master (CI_DEFAULT_BRANCH)
+#     Variable: SCHEDULE_KIND=docker
 
 stages:
   - test
@@ -24,23 +30,31 @@ variables:
   DOCKER_HOST: unix:///var/run/docker.sock
   DOCKER_TLS_CERTDIR: ""
   # Ebitengine cross-compiles to Windows with CGO_ENABLED=0, but its macOS GLFW
-  # backend still needs CGO — so the macOS artifact requires a real Mac runner.
+  # backend still needs CGO - so the macOS artifact requires a real Mac runner.
   SKIP_MACOS: "true"
 
 .rules-all:
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_KIND == "docker"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
     - if: $CI_COMMIT_TAG
 
 .rules-release:
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 .rules-docker-publish:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_KIND == "docker"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH
